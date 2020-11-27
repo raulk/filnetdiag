@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	gosync "sync"
+	"sync"
 	"time"
 
 	"github.com/filecoin-project/lotus/chain/types"
@@ -59,7 +59,7 @@ func (l *logEventTracer) Trace(evt *pubsub_pb.TraceEvent) {
 
 func runCheckBlockPublishers(_ *cli.Context) error {
 	var (
-		wg       gosync.WaitGroup
+		wg       sync.WaitGroup
 		ch       = make(chan interface{}, 16)
 		filename = fmt.Sprintf("diag.blockpublishers.%s.out", time.Now().Format(time.RFC3339))
 	)
@@ -90,7 +90,7 @@ func runCheckBlockPublishers(_ *cli.Context) error {
 			hash := blake2b.Sum256(m.Data)
 			return string(hash[:])
 		}),
-		pubsub.WithEventTracer(&logEventTracer{logger: log.Named("pubsub")}),
+		// pubsub.WithEventTracer(&logEventTracer{logger: log.Named("pubsub")}),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to instantiate gossipsub: %w", err)
@@ -112,14 +112,15 @@ func runCheckBlockPublishers(_ *cli.Context) error {
 	}
 	defer sub.Cancel()
 
-	log.Infof("subscribed to blocks topic; waiting for blocks")
+	log.Infow("subscribed to blocks topic; waiting for blocks", "duration", checkBlockPublishersFlags.duration)
 
 	ctx, cancel := context.WithTimeout(context.Background(), checkBlockPublishersFlags.duration)
 	defer cancel()
 
 	checked := make(map[peer.ID]struct{})
 
-	for {
+	var tasksWg sync.WaitGroup
+	for ctx.Err() == nil {
 		msg, err := sub.Next(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -151,35 +152,49 @@ func runCheckBlockPublishers(_ *cli.Context) error {
 			checked[id] = struct{}{}
 		}
 
-		result := &BlockPublisherResult{
-			ResultCommon: ResultCommon{Timestamp: time.Now()},
-			BlockCID:     block.Cid(),
-			PeerID:       id,
-		}
+		log.Infow("testing peer")
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		tasksWg.Add(1)
+		go func() {
+			defer tasksWg.Done()
 
-		action, ai, err := performDHTLookup(ctx, id, log)
-		result.Actions = append(result.Actions, action)
-		cancel()
-		if err != nil {
+			result := &BlockPublisherResult{
+				ResultCommon: ResultCommon{Timestamp: time.Now()},
+				BlockCID:     block.Cid(),
+				PeerID:       id,
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+
+			action, ai, err := performDHTLookup(ctx, id, log)
+			result.Actions = append(result.Actions, action)
+			cancel()
+			if err != nil {
+				ch <- result
+				return
+			}
+
+			result.Addrs = ai.Addrs
+
+			// dial the addrinfo returned by the DHT.
+			ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+			action = dial(ctx, ai, "dht_dial")
+			result.Actions = append(result.Actions, action)
 			ch <- result
-			continue
-		}
+			cancel()
+		}()
 
-		result.Addrs = ai.Addrs
-
-		// dial the addrinfo returned by the DHT.
-		ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
-		action = dial(ctx, ai, "dht_dial")
-		result.Actions = append(result.Actions, action)
-		ch <- result
-		cancel()
 	}
+
+	tasksWg.Wait()
 
 	close(ch)
 
 	wg.Wait()
+
+	sub.Cancel()
+
+	maybeUploadReport(filename)
 
 	return nil
 }

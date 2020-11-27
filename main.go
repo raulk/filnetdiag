@@ -37,6 +37,7 @@ import (
 // some checks.
 const Endpoint = "https://api.node.glif.io"
 const DHTPrefix = "/fil/kad/testnetnet"
+const UploadURL = "https://filreports.raul.io/upload"
 
 var (
 	// cl is a JSON-RPC client initialized to point to glif's node.
@@ -94,6 +95,11 @@ type ResultCommon struct {
 	Errors []string `json:",omitempty"`
 }
 
+var mainFlags struct {
+	upload    bool
+	uploadUrl string
+}
+
 func main() {
 	cfg := zap.NewDevelopmentConfig()
 	cfg.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
@@ -117,6 +123,21 @@ func main() {
 			checkBootstrappersCmd,
 			checkMinersCmd,
 			checkBlockPublishersCmd,
+			serverCmd,
+		},
+		Flags: []cli.Flag{
+			&cli.BoolFlag{
+				Name:        "upload",
+				Usage:       "whether to upload results to reports server",
+				Value:       true,
+				Destination: &mainFlags.upload,
+			},
+			&cli.StringFlag{
+				Name:        "upload-url",
+				Usage:       "URL to upload the report to",
+				Value:       UploadURL,
+				Destination: &mainFlags.uploadUrl,
+			},
 		},
 		Before: func(_ *cli.Context) error {
 			// construct the host.
@@ -285,4 +306,44 @@ func createHeader(kind string) *ReportHeader {
 		h.From[url] = ips[i]
 	}
 	return h
+}
+
+func maybeUploadReport(filename string) {
+	if !mainFlags.upload {
+		log.Infof("upload disabled; skipping")
+		return
+	}
+	if mainFlags.uploadUrl == "" {
+		log.Infof("no upload URL; skipping")
+		return
+	}
+
+	file, err := os.Open(filename)
+	if err != nil {
+		log.Warnw("could not open report for uploading", "filename", filename, "error", err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", mainFlags.uploadUrl, file)
+	if err != nil {
+		log.Warnw("failed to construct HTTP POST request for upload", "error", err)
+		return
+	}
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Warnw("failed upload report", "error", err)
+		return
+	}
+
+	msg, _ := ioutil.ReadAll(res.Body)
+	if status := res.StatusCode; status != http.StatusOK {
+		log.Warnw("non-200 status received from server; report rejected", "status", status, "msg", string(msg))
+		return
+	}
+
+	log.Infow("report uploaded successfully; please use this identifier to refer to it", "identifier", string(msg))
 }

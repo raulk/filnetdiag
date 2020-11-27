@@ -24,7 +24,7 @@ var checkMinersFlags struct {
 var checkMinersCmd = &cli.Command{
 	Name:        "check-miners",
 	Description: "run connectivity checks against miners",
-	Action:      runcheckMiners,
+	Action:      runCheckMiners,
 	Flags: []cli.Flag{
 		&cli.UintFlag{
 			Name:        "top",
@@ -50,7 +50,7 @@ type MinersResult struct {
 	Actions []Check `json:",omitempty"`
 }
 
-func runcheckMiners(_ *cli.Context) (err error) {
+func runCheckMiners(_ *cli.Context) (err error) {
 	var (
 		wg       gosync.WaitGroup
 		ch       = make(chan interface{}, 16)
@@ -149,6 +149,9 @@ Outer:
 	close(ch)
 
 	wg.Wait()
+
+	maybeUploadReport(filename)
+
 	return nil
 }
 
@@ -191,7 +194,7 @@ func examineMiner(miner address.Address, id *peer.ID, maddrs []multiaddr.Multiad
 	result.DHTLookup = true
 	mlog = mlog.With("peer_id", *id)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
 	action, ai, err := performDHTLookup(ctx, *id, mlog)

@@ -40,7 +40,7 @@ var bootstrappers = func() []peer.AddrInfo {
 var checkBootstrappersCmd = &cli.Command{
 	Name:        "check-bootstrappers",
 	Description: "run connectivity checks against bootstrappers",
-	Action:      runcheckBootstrappers,
+	Action:      runCheckBootstrappers,
 }
 
 type BootstrapperResult struct {
@@ -50,7 +50,7 @@ type BootstrapperResult struct {
 	Actions []Check               `json:",omitempty"`
 }
 
-func runcheckBootstrappers(_ *cli.Context) error {
+func runCheckBootstrappers(_ *cli.Context) error {
 	var (
 		wg       sync.WaitGroup
 		ch       = make(chan interface{}, 16)
@@ -71,6 +71,10 @@ func runcheckBootstrappers(_ *cli.Context) error {
 	connectBootstrappers(ch)
 	close(ch)
 
+	wg.Wait()
+
+	maybeUploadReport(filename)
+
 	return nil
 }
 
@@ -81,7 +85,7 @@ func connectBootstrappers(ch chan interface{}) {
 		log.Infow("connecting to bootstrapper", "id", ai.ID)
 		_ = host.Network().ClosePeer(ai.ID)
 		start := time.Now()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		err := host.Connect(ctx, ai)
 		cancel()
 
