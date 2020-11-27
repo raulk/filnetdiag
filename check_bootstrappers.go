@@ -37,31 +37,35 @@ var bootstrappers = func() []peer.AddrInfo {
 	return addrs
 }()
 
-var probeBootstrappersCmd = &cli.Command{
-	Name:        "probe-bootstrappers",
+var checkBootstrappersCmd = &cli.Command{
+	Name:        "check-bootstrappers",
 	Description: "run connectivity checks against bootstrappers",
-	Action:      runProbeBootstrappers,
+	Action:      runcheckBootstrappers,
 }
 
 type BootstrapperResult struct {
 	ResultCommon
 	PeerID  *peer.ID              `json:",omitempty"`
 	Addrs   []multiaddr.Multiaddr `json:",omitempty"`
-	Actions []Action              `json:",omitempty"`
+	Actions []Check               `json:",omitempty"`
 }
 
-func runProbeBootstrappers(_ *cli.Context) error {
+func runcheckBootstrappers(_ *cli.Context) error {
 	var (
 		wg       sync.WaitGroup
 		ch       = make(chan interface{}, 16)
 		filename = fmt.Sprintf("diag.bootstrappers.%s.out", time.Now().Format(time.RFC3339))
 	)
 
+	log.Infof("writing results to file: %s", filename)
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		writeResults(filename, ch)
+		writeReport(filename, ch)
 	}()
+
+	ch <- createHeader("bootstrappers")
 
 	log.Infow("connecting to bootstrappers", "count", len(bootstrappers))
 	connectBootstrappers(ch)
@@ -86,17 +90,14 @@ func connectBootstrappers(ch chan interface{}) {
 
 		if ch != nil {
 			ch <- &BootstrapperResult{
-				ResultCommon: ResultCommon{
-					Kind:      "bootstrapper",
-					Timestamp: time.Now(),
-				},
-				PeerID: &ai.ID,
-				Addrs:  ai.Addrs,
-				Actions: []Action{{
+				ResultCommon: ResultCommon{Timestamp: time.Now()},
+				PeerID:       &ai.ID,
+				Addrs:        ai.Addrs,
+				Actions: []Check{{
 					Kind:    "dial",
 					Success: err == nil,
 					Error:   errorMsg(err),
-					Latency: took.Milliseconds(),
+					TookMs:  took.Milliseconds(),
 				}},
 			}
 		}

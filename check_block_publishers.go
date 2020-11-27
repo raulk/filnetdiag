@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	gosync "sync"
 	"time"
@@ -14,46 +15,64 @@ import (
 	"github.com/minio/blake2b-simd"
 	"github.com/multiformats/go-multiaddr"
 	"github.com/urfave/cli/v2"
+	"go.uber.org/zap"
 )
 
-var probeBlockPublishersFlags struct {
+var checkBlockPublishersFlags struct {
 	duration time.Duration
 }
 
-var probeBlockPublishersCmd = &cli.Command{
-	Name:        "probe-block-publishers",
+var checkBlockPublishersCmd = &cli.Command{
+	Name:        "check-block-publishers",
 	Description: "run connectivity checks against block publishers",
-	Action:      runProbeBlockPublishers,
+	Action:      runCheckBlockPublishers,
 	Flags: []cli.Flag{
 		&cli.DurationFlag{
 			Name:        "duration",
-			Usage:       "how long to probe for",
+			Usage:       "how long to check for",
 			Value:       10 * time.Minute,
-			Destination: &probeBlockPublishersFlags.duration,
+			Destination: &checkBlockPublishersFlags.duration,
 		},
 	},
 }
 
 type BlockPublisherResult struct {
 	ResultCommon
-	BlockCID cid.Cid               `json:",omitempty"`
-	PeerID   peer.ID               `json:",omitempty"`
-	Addrs    []multiaddr.Multiaddr `json:",omitempty"`
-	Actions  []Action              `json:",omitempty"`
+	// BlockCID is the CID of the received block.
+	BlockCID cid.Cid `json:",omitempty"`
+	// PeerID is the peer ID of the publisher.
+	PeerID  peer.ID               `json:",omitempty"`
+	Addrs   []multiaddr.Multiaddr `json:",omitempty"`
+	Actions []Check               `json:",omitempty"`
 }
 
-func runProbeBlockPublishers(_ *cli.Context) error {
+type logEventTracer struct {
+	logger *zap.SugaredLogger
+}
+
+var _ pubsub.EventTracer = (*logEventTracer)(nil)
+
+func (l *logEventTracer) Trace(evt *pubsub_pb.TraceEvent) {
+	m, _ := json.Marshal(evt)
+	l.logger.Debug(string(m))
+}
+
+func runCheckBlockPublishers(_ *cli.Context) error {
 	var (
 		wg       gosync.WaitGroup
 		ch       = make(chan interface{}, 16)
 		filename = fmt.Sprintf("diag.blockpublishers.%s.out", time.Now().Format(time.RFC3339))
 	)
 
+	log.Infof("writing results to file: %s", filename)
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		writeResults(filename, ch)
+		writeReport(filename, ch)
 	}()
+
+	ch <- createHeader("blockpublishers")
 
 	// turn off the mesh in bootstrappers -- only do gossip and PX
 	pubsub.GossipSubD = 0
@@ -71,6 +90,7 @@ func runProbeBlockPublishers(_ *cli.Context) error {
 			hash := blake2b.Sum256(m.Data)
 			return string(hash[:])
 		}),
+		pubsub.WithEventTracer(&logEventTracer{logger: log.Named("pubsub")}),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to instantiate gossipsub: %w", err)
@@ -92,10 +112,12 @@ func runProbeBlockPublishers(_ *cli.Context) error {
 	}
 	defer sub.Cancel()
 
-	log.Infof("subscribed to blocks topic")
+	log.Infof("subscribed to blocks topic; waiting for blocks")
 
-	ctx, cancel := context.WithTimeout(context.Background(), probeBlockPublishersFlags.duration)
+	ctx, cancel := context.WithTimeout(context.Background(), checkBlockPublishersFlags.duration)
 	defer cancel()
+
+	checked := make(map[peer.ID]struct{})
 
 	for {
 		msg, err := sub.Next(ctx)
@@ -122,13 +144,17 @@ func runProbeBlockPublishers(_ *cli.Context) error {
 		log := log.With("peer_id", id)
 		log.Infow("block received", "cid", block.Cid())
 
+		if _, ok := checked[id]; ok {
+			log.Infow("peer already checked; skipping")
+			continue
+		} else {
+			checked[id] = struct{}{}
+		}
+
 		result := &BlockPublisherResult{
-			ResultCommon: ResultCommon{
-				Timestamp: time.Now(),
-				Kind:      "block_publisher",
-			},
-			BlockCID: block.Cid(),
-			PeerID:   id,
+			ResultCommon: ResultCommon{Timestamp: time.Now()},
+			BlockCID:     block.Cid(),
+			PeerID:       id,
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -145,8 +171,7 @@ func runProbeBlockPublishers(_ *cli.Context) error {
 
 		// dial the addrinfo returned by the DHT.
 		ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
-		action = connect(ctx, ai)
-		action.Kind = "dht_dial"
+		action = dial(ctx, ai, "dht_dial")
 		result.Actions = append(result.Actions, action)
 		ch <- result
 		cancel()

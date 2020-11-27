@@ -3,35 +3,54 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io/ioutil"
+	"net"
+	"net/http"
 	"os"
+	"sync"
 	"time"
 
+	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/go-jsonrpc"
 	"github.com/filecoin-project/lotus/api"
 	"github.com/filecoin-project/lotus/chain/actors/builtin/miner"
-	core "github.com/libp2p/go-libp2p-core"
-	"github.com/libp2p/go-libp2p-core/network"
-	"github.com/libp2p/go-libp2p-core/peer"
-	"github.com/urfave/cli/v2"
-	"go.uber.org/zap"
-
-	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/lotus/chain/types"
 	"github.com/filecoin-project/lotus/node/modules/dtypes"
+	"go.uber.org/zap/zapcore"
+
 	"github.com/ipfs/go-datastore"
-	"github.com/ipfs/go-datastore/sync"
+	dssync "github.com/ipfs/go-datastore/sync"
+
 	"github.com/libp2p/go-libp2p"
-	dht "github.com/libp2p/go-libp2p-kad-dht"
-	record "github.com/libp2p/go-libp2p-record"
+	"github.com/libp2p/go-libp2p-core"
+	"github.com/libp2p/go-libp2p-core/network"
+	"github.com/libp2p/go-libp2p-core/peer"
+	"github.com/libp2p/go-libp2p-kad-dht"
+	"github.com/libp2p/go-libp2p-record"
+
+	"github.com/urfave/cli/v2"
+	"go.uber.org/zap"
 )
+
+// Endpoint is the endpoint to use for accessing mainnet state. Only used in
+// some checks.
+const Endpoint = "https://api.node.glif.io"
+const DHTPrefix = "/fil/kad/testnetnet"
 
 var (
-	cl   client
+	// cl is a JSON-RPC client initialized to point to glif's node.
+	cl client
+	// host is a libp2p host.
 	host core.Host
-	d    *dht.IpfsDHT
-	log  *zap.SugaredLogger
+	// d is a libp2p DHT client.
+	d *dht.IpfsDHT
+	// log is the global logger.
+	log *zap.SugaredLogger
 )
 
+// client is a minimal JSON-RPC client proxy with only the methods used by this
+// tool.
 type client struct {
 	ChainHead        func(context.Context) (*types.TipSet, error)
 	StateListMiners  func(context.Context, types.TipSetKey) ([]address.Address, error)
@@ -40,51 +59,82 @@ type client struct {
 	StateMinerPower  func(context.Context, address.Address, types.TipSetKey) (*api.MinerPower, error)
 }
 
-type Action struct {
-	Kind    string `json:",omitempty"`
-	Success bool   `json:",omitempty"`
-	Error   string `json:",omitempty"`
-	Latency int64  `json:",omitempty"`
+// Check represents a check that was performed by this diagnostics tool.
+type Check struct {
+	// Kind is the kind of check; some values are: "dial", "dht_lookup", "dht_dial".
+	Kind string `json:",omitempty"`
+	// Success is whether this check succeeded or not.
+	Success bool `json:",omitempty"`
+	// Error is an optional error message in case the check failed.
+	Error string `json:",omitempty"`
+	// Took is the amount of time this check took, in milliseconds.
+	TookMs int64 `json:",omitempty"`
 }
 
-type ResultCommon struct {
+// ReportHeader is a report header. It must be output as the first line of
+// every report.
+type ReportHeader struct {
+	// Header is always true, to signify that this is a header record.
+	Header bool
+	// Timestamp is the timestamp at which this diagnostics job was started.
 	Timestamp time.Time
-	Kind      string
-	Errors    []string `json:",omitempty"`
+	// Kind is the kind of report.
+	Kind string
+	// From is the public-facing IP address of the machine where the report
+	// was generated, as reported by various services.
+	From map[string]net.IP
+}
+
+// ResultCommon is struct containing common fields for embedding inside
+// result records.
+type ResultCommon struct {
+	// Timestamp is the time at which this result was emitted.
+	Timestamp time.Time
+	// Errors contains global errors associated with a result record.
+	Errors []string `json:",omitempty"`
 }
 
 func main() {
-	l, _ := zap.NewDevelopment(zap.WithCaller(false))
+	cfg := zap.NewDevelopmentConfig()
+	cfg.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	l, _ := cfg.Build(zap.WithCaller(false))
 	log = l.Sugar()
 	defer log.Sync()
 
 	// get all miners from glif.
-	closer, err := jsonrpc.NewClient(context.Background(), "https://api.node.glif.io", "Filecoin", &cl, nil)
+	closer, err := jsonrpc.NewClient(context.Background(), Endpoint, "Filecoin", &cl, nil)
 	if err != nil {
 		log.Fatalf("failed to create JSON-RPC client: %s; aborting", err)
 	}
 	defer closer()
 
-	// construct the host.
-	host, err = constructLibp2pHost()
-	if err != nil {
-		log.Fatalf("failed to instantiate libp2p host: %s; aborting", err)
-	}
-
-	// construct the DHT.
-	d, err = constructDHT()
-	if err != nil {
-		log.Fatalf("failed to construct DHT: %s; aborting", err)
-	}
-
+	// instantiate the app.
 	app := &cli.App{
 		Name:  "netdiag",
 		Usage: "Filecoin networking diagnostics tool",
 		Commands: []*cli.Command{
 			genMinerCacheCmd,
-			probeBootstrappersCmd,
-			probeMinersCmd,
-			probeBlockPublishersCmd,
+			checkBootstrappersCmd,
+			checkMinersCmd,
+			checkBlockPublishersCmd,
+		},
+		Before: func(_ *cli.Context) error {
+			// construct the host.
+			host, err = constructLibp2pHost()
+			if err != nil {
+				return fmt.Errorf("failed to instantiate libp2p host: %w; aborting", err)
+			}
+			// construct the DHT.
+			d, err = constructDHT()
+			if err != nil {
+				return fmt.Errorf("failed to construct DHT: %w; aborting", err)
+			}
+			return nil
+		},
+		After: func(_ *cli.Context) error {
+			_ = host.Close()
+			_ = d.Close()
+			return nil
 		},
 	}
 
@@ -97,7 +147,7 @@ func constructLibp2pHost() (core.Host, error) {
 	opts := []libp2p.Option{
 		libp2p.NoListenAddrs,
 		libp2p.Ping(true),
-		libp2p.UserAgent("filnetdiag"),
+		libp2p.UserAgent("netdiag"),
 		libp2p.NATPortMap(),
 		libp2p.DefaultMuxers,
 		libp2p.DefaultSecurity,
@@ -109,9 +159,9 @@ func constructLibp2pHost() (core.Host, error) {
 func constructDHT() (*dht.IpfsDHT, error) {
 	dhtopts := []dht.Option{
 		dht.Mode(dht.ModeClient),
-		dht.Datastore(sync.MutexWrap(datastore.NewMapDatastore())),
+		dht.Datastore(dssync.MutexWrap(datastore.NewMapDatastore())),
 		dht.Validator(record.NamespacedValidator{"pk": record.PublicKeyValidator{}}),
-		dht.ProtocolPrefix("/fil/kad/testnetnet"),
+		dht.ProtocolPrefix(DHTPrefix),
 		dht.QueryFilter(dht.PublicQueryFilter),
 		dht.RoutingTableFilter(dht.PublicRoutingTableFilter),
 		dht.DisableProviders(),
@@ -121,14 +171,12 @@ func constructDHT() (*dht.IpfsDHT, error) {
 	return dht.New(context.Background(), host, dhtopts...)
 }
 
-func writeResults(path string, ch chan interface{}) {
+func writeReport(path string, ch chan interface{}) {
 	file, err := os.Create(path)
 	if err != nil {
 		log.Fatalw("failed to create file; aborting", "file", path, "error", err)
 	}
 	defer file.Close()
-
-	log.Infof("writing results to file: %s", path)
 
 	enc := json.NewEncoder(file)
 	for res := range ch {
@@ -139,25 +187,27 @@ func writeResults(path string, ch chan interface{}) {
 	}
 }
 
-func connect(ctx context.Context, ai peer.AddrInfo) Action {
+// dial performs a libp2p dial check.
+func dial(ctx context.Context, ai peer.AddrInfo, kind string) Check {
+	log := log.With("peer_id", ai.ID)
+
 	if host.Network().Connectedness(ai.ID) == network.Connected {
 		log.Infow("peer was connected")
 	}
 	_ = host.Network().ClosePeer(ai.ID)
 	host.Peerstore().ClearAddrs(ai.ID)
 
-	log := log.With("peer_id", ai.ID)
-
-	log.Infow("connecting")
+	log.Infow("dialling")
 	start := time.Now()
 	err := host.Connect(ctx, ai)
 	took := time.Since(start)
-	log.Infow("connection result", "ok", err == nil, "took", took, "error", err)
+	log.Infow("dial result", "ok", err == nil, "took", took, "error", err)
 
-	return Action{
+	return Check{
+		Kind:    kind,
 		Success: err == nil,
 		Error:   errorMsg(err),
-		Latency: took.Milliseconds(),
+		TookMs:  took.Milliseconds(),
 	}
 }
 
@@ -166,4 +216,73 @@ func errorMsg(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+func createHeader(kind string) *ReportHeader {
+	h := &ReportHeader{
+		Header:    true,
+		Kind:      kind,
+		Timestamp: time.Now(),
+		From:      make(map[string]net.IP),
+	}
+
+	// services are the URLs of the services we're querying.
+	services := []string{
+		"https://myexternalip.com/raw",
+		"https://api.ipify.org",
+		"https://ip.seeip.org",
+		"https://ipapi.co/ip/",
+	}
+
+	// ips will accumulate the responses in the same position as the URL of the
+	// service we requested it from.
+	ips := make([]net.IP, len(services))
+
+	// fan out queries.
+	var wg sync.WaitGroup
+	for i, url := range services {
+		url := url
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			log := log.With("service", url)
+
+			log.Infow("querying for external-facing IP address")
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+			if err != nil {
+				log.Warnw("failed to create HTTP request to public IP introspection service", "error", err)
+				return
+			}
+
+			start := time.Now()
+			res, err := http.DefaultClient.Do(req)
+			if err != nil {
+				log.Warnw("failed to request address from public IP introspection service", "error", err)
+				return
+			}
+			bytes, err := ioutil.ReadAll(res.Body)
+			if err != nil {
+				log.Warnw("failed to parse response from public IP introspection service", "error", err)
+				return
+			}
+			ip := net.ParseIP(string(bytes))
+
+			log.Infow("obtained IP address", "ip", ip, "took", time.Since(start))
+
+			ips[i] = ip
+		}()
+	}
+
+	// collect the results.
+	wg.Wait()
+	for i, url := range services {
+		h.From[url] = ips[i]
+	}
+	return h
 }

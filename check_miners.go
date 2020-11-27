@@ -17,20 +17,20 @@ import (
 	"go.uber.org/zap"
 )
 
-var probeMinersFlags struct {
+var checkMinersFlags struct {
 	top uint
 }
 
-var probeMinersCmd = &cli.Command{
-	Name:        "probe-miners",
+var checkMinersCmd = &cli.Command{
+	Name:        "check-miners",
 	Description: "run connectivity checks against miners",
-	Action:      runProbeMiners,
+	Action:      runcheckMiners,
 	Flags: []cli.Flag{
 		&cli.UintFlag{
 			Name:        "top",
 			Usage:       "only attempt to connect to the top N miners by power",
 			Value:       100,
-			Destination: &probeMinersFlags.top,
+			Destination: &checkMinersFlags.top,
 		},
 	},
 }
@@ -47,21 +47,25 @@ type MinersResult struct {
 	DHTLookup      bool
 	DHTDial        bool
 
-	Actions []Action `json:",omitempty"`
+	Actions []Check `json:",omitempty"`
 }
 
-func runProbeMiners(_ *cli.Context) (err error) {
+func runcheckMiners(_ *cli.Context) (err error) {
 	var (
 		wg       gosync.WaitGroup
 		ch       = make(chan interface{}, 16)
 		filename = fmt.Sprintf("diag.miners.%s.out", time.Now().Format(time.RFC3339))
 	)
 
+	log.Infof("writing results to file: %s", filename)
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		writeResults(filename, ch)
+		writeReport(filename, ch)
 	}()
+
+	ch <- createHeader("miners")
 
 	log.Infow("connecting to bootstrappers", "count", len(bootstrappers))
 	connectBootstrappers(ch)
@@ -94,8 +98,8 @@ func runProbeMiners(_ *cli.Context) (err error) {
 		return fmt.Errorf("failed to read miners cache: %w", err)
 	}
 
-	// restrict miners to probe
-	if cnt := probeMinersFlags.top; cnt > 0 {
+	// restrict miners to check
+	if cnt := checkMinersFlags.top; cnt > 0 {
 		miners = miners[:cnt]
 	}
 
@@ -155,10 +159,7 @@ func examineMiner(miner address.Address, id *peer.ID, maddrs []multiaddr.Multiad
 	defer mlog.Infow("done with miner")
 
 	result := &MinersResult{
-		ResultCommon: ResultCommon{
-			Timestamp: time.Now(),
-			Kind:      "miner",
-		},
+		ResultCommon:     ResultCommon{Timestamp: time.Now()},
 		Miner:            &miner,
 		PeerID:           id,
 		MinerStateMaddrs: maddrs,
@@ -181,8 +182,7 @@ func examineMiner(miner address.Address, id *peer.ID, maddrs []multiaddr.Multiad
 	for _, ma := range maddrs {
 		ai := peer.AddrInfo{ID: *id, Addrs: []multiaddr.Multiaddr{ma}}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		action := connect(ctx, ai)
-		action.Kind = "dial"
+		action := dial(ctx, ai, "dial")
 		result.Actions = append(result.Actions, action)
 		cancel()
 	}
@@ -207,14 +207,13 @@ func examineMiner(miner address.Address, id *peer.ID, maddrs []multiaddr.Multiad
 	// dial the addrinfo returned by the DHT.
 	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	action = connect(ctx, ai)
-	action.Kind = "dht_dial"
+	action = dial(ctx, ai, "dht_dial")
 	result.Actions = append(result.Actions, action)
 
 	return result
 }
 
-func performDHTLookup(ctx context.Context, id peer.ID, peerlog *zap.SugaredLogger) (Action, peer.AddrInfo, error) {
+func performDHTLookup(ctx context.Context, id peer.ID, peerlog *zap.SugaredLogger) (Check, peer.AddrInfo, error) {
 	peerlog.Infow("trying DHT lookup")
 
 	// disconnect from the peer and clear its addresses from the peerstore.
@@ -228,11 +227,11 @@ func performDHTLookup(ctx context.Context, id peer.ID, peerlog *zap.SugaredLogge
 
 	peerlog.Infow("DHT lookup result", "took", took, "ok", err == nil, "error", err)
 
-	action := Action{
+	action := Check{
 		Kind:    "dht_lookup",
 		Success: err == nil,
 		Error:   errorMsg(err),
-		Latency: took.Milliseconds(),
+		TookMs:  took.Milliseconds(),
 	}
 	return action, addrInfo, err
 }
@@ -241,7 +240,6 @@ func errorMinerResult(m address.Address, mi *miner.MinerInfo, err error) *Miners
 	res := &MinersResult{
 		ResultCommon: ResultCommon{
 			Timestamp: time.Now(),
-			Kind:      "miner",
 			Errors:    []string{err.Error()},
 		},
 		Miner: &m,
