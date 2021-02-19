@@ -342,7 +342,7 @@ func maybeUploadReport(filename string) {
 
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Warnw("failed upload report", "error", err)
+		log.Warnw("failed to upload report", "error", err)
 		return
 	}
 

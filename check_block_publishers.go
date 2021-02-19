@@ -13,7 +13,6 @@ import (
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	pubsub_pb "github.com/libp2p/go-libp2p-pubsub/pb"
 	"github.com/minio/blake2b-simd"
-	"github.com/multiformats/go-multiaddr"
 	"github.com/urfave/cli/v2"
 	"go.uber.org/zap"
 )
@@ -193,6 +192,8 @@ func runCheckBlockPublishers(_ *cli.Context) error {
 	wg.Wait()
 
 	sub.Cancel()
+
+	log.Infof("report written out to: %s", filename)
 
 	maybeUploadReport(filename)
 

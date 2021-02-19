@@ -72,6 +72,8 @@ func runCheckBootstrappers(_ *cli.Context) error {
 
 	wg.Wait()
 
+	log.Infof("report written out to: %s", filename)
+
 	maybeUploadReport(filename)
 
 	return nil

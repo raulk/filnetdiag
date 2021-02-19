@@ -150,6 +150,8 @@ Outer:
 
 	wg.Wait()
 
+	log.Infof("report written out to: %s", filename)
+
 	maybeUploadReport(filename)
 
 	return nil
