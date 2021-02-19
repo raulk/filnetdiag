@@ -25,11 +25,38 @@ To regenerate the cache, use the `gen-miner-cache` subcommand.
 
 Finally, there is a WIP `analyze` to process reports and print a summary.
 
-## Author/maintainer
+# Run it
+
+Assuming you have the Go toolchain installed:
+
+```shell
+$ git clone https://github.com/raulk/filnetdiag
+$ go build .
+$ ./filnetdiag --help
+```
+
+# External IP
+
+This tool records your external IP in the report, to aid analysis. It records
+four observations, as reported by:
+
+* https://myexternalip.com/
+* https://api.ipify.org
+* https://ip.seeip.org
+* https://ipapi.co/
+
+# JSON-RPC API endpoints
+
+This tool uses the JSON-RPC endpoints hosted by the [Glif](http://glif.io/)
+team (thanks!). Overriding at runtime is currently not implemented. To use a
+different API endpoint (e.g. a local Filecoin node), change te `Endpoint`
+const before compiling.
+
+# Author/maintainer
 
 @raulk.
 
-## License
+# License
 
 Dual-licensed: [MIT](./LICENSE-MIT), [Apache Software License v2](./LICENSE-APACHE), by way of the
 [Permissive License Stack](https://protocol.ai/blog/announcing-the-permissive-license-stack/).
