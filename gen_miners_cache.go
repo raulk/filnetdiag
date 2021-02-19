@@ -14,6 +14,7 @@ import (
 	"github.com/filecoin-project/lotus/chain/actors/builtin/power"
 	"github.com/urfave/cli/v2"
 	"go.uber.org/ratelimit"
+	"golang.org/x/sync/errgroup"
 )
 
 var genMinerCacheFlags struct {
@@ -34,7 +35,7 @@ var genMinerCacheCmd = &cli.Command{
 	},
 }
 
-func runGenMinerCache(_ *cli.Context) error {
+func runGenMinerCache(cctx *cli.Context) error {
 	head, err := cl.ChainHead(context.Background())
 	if err != nil {
 		return err
@@ -52,26 +53,40 @@ func runGenMinerCache(_ *cli.Context) error {
 		power power.Claim
 	}
 
-	var minerPowers []minerPower
-	rl := ratelimit.New(int(genMinerCacheFlags.ratelimit), ratelimit.WithoutSlack)
+	var (
+		minerPowers = make([]minerPower, len(unordered)) // concurrent indexed access, not racy.
+		limit       = ratelimit.New(int(genMinerCacheFlags.ratelimit), ratelimit.WithoutSlack)
+	)
+
+	errgrp, _ := errgroup.WithContext(cctx.Context)
 	for i, m := range unordered {
-		rl.Take()
+		i := i
+		m := m
+		errgrp.Go(func() error {
+			limit.Take()
 
-		log.Infow("querying miner power", "miner", m, "current", i+1, "total", len(unordered))
+			log.Infow("querying miner power", "miner", m, "current", i, "total", len(unordered))
 
-		var pow *api.MinerPower
-		err := retry.Do(func() (err error) {
-			pow, err = cl.StateMinerPower(context.Background(), m, head.Key())
-			return err
-		}, retry.Delay(500*time.Millisecond), retry.Attempts(10), retry.OnRetry(func(n uint, err error) {
-			log.Warnw("failed to obtain miner power", "miner", m, "attempt", n, "error", err)
-		}))
-		if err != nil {
-			return fmt.Errorf("all attempts to obtain miner power exhausted; aborting")
-		}
+			var pow *api.MinerPower
+			err := retry.Do(func() (err error) {
+				pow, err = cl.StateMinerPower(context.Background(), m, head.Key())
+				return err
+			}, retry.Delay(500*time.Millisecond), retry.Attempts(10), retry.OnRetry(func(n uint, err error) {
+				log.Warnw("failed to obtain miner power", "miner", m, "attempt", n, "error", err)
+			}))
+			if err != nil {
+				return fmt.Errorf("all attempts to obtain miner power exhausted; aborting")
+			}
 
-		minerPowers = append(minerPowers, minerPower{m, pow.MinerPower})
-		log.Infow("finished querying miner's power", "miner", m, "qadj_power", pow.MinerPower.QualityAdjPower)
+			minerPowers[i] = minerPower{m, pow.MinerPower}
+			log.Infow("finished querying miner's power", "miner", m, "qadj_power", pow.MinerPower.QualityAdjPower)
+
+			return nil
+		})
+	}
+
+	if err := errgrp.Wait(); err != nil {
+		return err
 	}
 
 	sort.Slice(minerPowers, func(i, j int) bool {

@@ -34,11 +34,13 @@ import (
 	"go.uber.org/zap"
 )
 
-// Endpoint is the endpoint to use for accessing mainnet state. Only used in
-// some checks.
-const Endpoint = "https://api.node.glif.io"
-const DHTPrefix = "/fil/kad/testnetnet"
-const UploadURL = "https://filreports.raul.io/upload"
+const (
+	// Endpoint is the endpoint to use for accessing mainnet state. Only used in
+	// some checks.
+	Endpoint  = "https://api.node.glif.io"
+	DHTPrefix = "/fil/kad/testnetnet"
+	UploadURL = "https://filreports.raul.io/upload"
+)
 
 var (
 	// cl is a JSON-RPC client initialized to point to glif's node.
@@ -134,7 +136,7 @@ func main() {
 			&cli.BoolFlag{
 				Name:        "upload",
 				Usage:       "whether to upload results to reports server",
-				Value:       true,
+				Value:       false,
 				Destination: &mainFlags.upload,
 			},
 			&cli.StringFlag{
