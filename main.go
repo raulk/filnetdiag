@@ -17,6 +17,7 @@ import (
 	"github.com/filecoin-project/lotus/chain/actors/builtin/miner"
 	"github.com/filecoin-project/lotus/chain/types"
 	"github.com/filecoin-project/lotus/node/modules/dtypes"
+	"github.com/multiformats/go-multiaddr"
 	"go.uber.org/zap/zapcore"
 
 	"github.com/ipfs/go-datastore"
@@ -89,6 +90,8 @@ type ReportHeader struct {
 // ResultCommon is struct containing common fields for embedding inside
 // result records.
 type ResultCommon struct {
+	// Kind is the kind of result record.
+	Kind string
 	// Timestamp is the time at which this result was emitted.
 	Timestamp time.Time
 	// Errors contains global errors associated with a result record.
@@ -103,6 +106,7 @@ var mainFlags struct {
 func main() {
 	cfg := zap.NewDevelopmentConfig()
 	cfg.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	cfg.DisableStacktrace = true
 	l, _ := cfg.Build(zap.WithCaller(false))
 	log = l.Sugar()
 	defer log.Sync()
@@ -123,6 +127,7 @@ func main() {
 			checkBootstrappersCmd,
 			checkMinersCmd,
 			checkBlockPublishersCmd,
+			analyzeCmd,
 			serverCmd,
 		},
 		Flags: []cli.Flag{
@@ -346,4 +351,12 @@ func maybeUploadReport(filename string) {
 	}
 
 	log.Infow("report uploaded successfully; please use this identifier to refer to it", "identifier", string(msg))
+}
+
+func stringMaddrs(addrs []multiaddr.Multiaddr) []string {
+	ret := make([]string, 0, len(addrs))
+	for _, a := range addrs {
+		ret = append(ret, a.String())
+	}
+	return ret
 }

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -82,16 +81,9 @@ func runReportsServer(_ *cli.Context) error {
 	if serverFlags.secure {
 		log.Infof("in secure mode")
 
-		hostPolicy := func(ctx context.Context, host string) error {
-			if host == serverFlags.host {
-				return nil
-			}
-			return fmt.Errorf("acme/autocert: only host %s is allowed", serverFlags.host)
-		}
-
 		m = &autocert.Manager{
 			Prompt:     autocert.AcceptTOS,
-			HostPolicy: hostPolicy,
+			HostPolicy: autocert.HostWhitelist(serverFlags.host),
 			Cache:      autocert.DirCache(keysdir),
 		}
 

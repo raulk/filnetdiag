@@ -8,7 +8,6 @@ import (
 
 	"github.com/filecoin-project/lotus/lib/addrutil"
 	"github.com/libp2p/go-libp2p-core/peer"
-	"github.com/multiformats/go-multiaddr"
 	"github.com/urfave/cli/v2"
 )
 
@@ -45,9 +44,9 @@ var checkBootstrappersCmd = &cli.Command{
 
 type BootstrapperResult struct {
 	ResultCommon
-	PeerID  *peer.ID              `json:",omitempty"`
-	Addrs   []multiaddr.Multiaddr `json:",omitempty"`
-	Actions []Check               `json:",omitempty"`
+	PeerID  *peer.ID `json:",omitempty"`
+	Addrs   []string `json:",omitempty"`
+	Actions []Check  `json:",omitempty"`
 }
 
 func runCheckBootstrappers(_ *cli.Context) error {
@@ -94,9 +93,9 @@ func connectBootstrappers(ch chan interface{}) {
 
 		if ch != nil {
 			ch <- &BootstrapperResult{
-				ResultCommon: ResultCommon{Timestamp: time.Now()},
+				ResultCommon: ResultCommon{Kind: "bootstrapper", Timestamp: time.Now()},
 				PeerID:       &ai.ID,
-				Addrs:        ai.Addrs,
+				Addrs:        stringMaddrs(ai.Addrs),
 				Actions: []Check{{
 					Kind:    "dial",
 					Success: err == nil,

@@ -41,9 +41,9 @@ type BlockPublisherResult struct {
 	// BlockCID is the CID of the received block.
 	BlockCID cid.Cid `json:",omitempty"`
 	// PeerID is the peer ID of the publisher.
-	PeerID  peer.ID               `json:",omitempty"`
-	Addrs   []multiaddr.Multiaddr `json:",omitempty"`
-	Actions []Check               `json:",omitempty"`
+	PeerID  peer.ID  `json:",omitempty"`
+	Addrs   []string `json:",omitempty"`
+	Actions []Check  `json:",omitempty"`
 }
 
 type logEventTracer struct {
@@ -159,7 +159,7 @@ func runCheckBlockPublishers(_ *cli.Context) error {
 			defer tasksWg.Done()
 
 			result := &BlockPublisherResult{
-				ResultCommon: ResultCommon{Timestamp: time.Now()},
+				ResultCommon: ResultCommon{Kind: "block_publisher", Timestamp: time.Now()},
 				BlockCID:     block.Cid(),
 				PeerID:       id,
 			}
@@ -174,7 +174,7 @@ func runCheckBlockPublishers(_ *cli.Context) error {
 				return
 			}
 
-			result.Addrs = ai.Addrs
+			result.Addrs = stringMaddrs(ai.Addrs)
 
 			// dial the addrinfo returned by the DHT.
 			ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)

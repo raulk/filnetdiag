@@ -38,10 +38,10 @@ var checkMinersCmd = &cli.Command{
 type MinersResult struct {
 	ResultCommon
 
-	Miner            *address.Address      `json:",omitempty"`
-	PeerID           *peer.ID              `json:",omitempty"`
-	MinerStateMaddrs []multiaddr.Multiaddr `json:",omitempty"`
-	DHTAddrs         []multiaddr.Multiaddr `json:",omitempty"`
+	Miner            *address.Address `json:",omitempty"`
+	PeerID           *peer.ID         `json:",omitempty"`
+	MinerStateMaddrs []string         `json:",omitempty"`
+	DHTAddrs         []string         `json:",omitempty"`
 
 	MinerStateDial bool
 	DHTLookup      bool
@@ -162,10 +162,10 @@ func examineMiner(miner address.Address, id *peer.ID, maddrs []multiaddr.Multiad
 	defer mlog.Infow("done with miner")
 
 	result := &MinersResult{
-		ResultCommon:     ResultCommon{Timestamp: time.Now()},
+		ResultCommon:     ResultCommon{Kind: "miner", Timestamp: time.Now()},
 		Miner:            &miner,
 		PeerID:           id,
-		MinerStateMaddrs: maddrs,
+		MinerStateMaddrs: stringMaddrs(maddrs),
 	}
 
 	// these multiaddrs are non-p2p address, i.e. they do not include peer IDs.
@@ -183,6 +183,7 @@ func examineMiner(miner address.Address, id *peer.ID, maddrs []multiaddr.Multiad
 
 	// try each multiaddr separately.
 	for _, ma := range maddrs {
+		result.MinerStateDial = true
 		ai := peer.AddrInfo{ID: *id, Addrs: []multiaddr.Multiaddr{ma}}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		action := dial(ctx, ai, "dial")
@@ -204,7 +205,7 @@ func examineMiner(miner address.Address, id *peer.ID, maddrs []multiaddr.Multiad
 	}
 
 	// add the DHT addresses, and mark the fact that we're dialing the DHT addresses.
-	result.DHTAddrs = ai.Addrs
+	result.DHTAddrs = stringMaddrs(ai.Addrs)
 	result.DHTDial = true
 
 	// dial the addrinfo returned by the DHT.
@@ -242,6 +243,7 @@ func performDHTLookup(ctx context.Context, id peer.ID, peerlog *zap.SugaredLogge
 func errorMinerResult(m address.Address, mi *miner.MinerInfo, err error) *MinersResult {
 	res := &MinersResult{
 		ResultCommon: ResultCommon{
+			Kind:      "miner",
 			Timestamp: time.Now(),
 			Errors:    []string{err.Error()},
 		},
